@@ -62,4 +62,6 @@ See `UPSTREAM.md` for the upstream Immich commit and path this repository was sp
 
 ## License Notes
 
-This repository inherits the upstream Immich machine-learning code and its third-party model constraints. In particular, InsightFace model redistribution and commercial use are subject to InsightFace licensing terms.
+This repository inherits the upstream Immich machine-learning code and is licensed under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
+
+Third-party models and dependencies remain subject to their own licenses. In particular, InsightFace model redistribution and commercial use are subject to InsightFace licensing terms.

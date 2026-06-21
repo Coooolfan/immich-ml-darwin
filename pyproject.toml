@@ -5,6 +5,7 @@ description = "Unofficial Immich machine-learning service tuning for macOS and A
 authors = [{ name = "Hau Tran", email = "alex.tran1502@gmail.com" }]
 requires-python = ">=3.11,<4.0"
 readme = "README.md"
+license = "AGPL-3.0-only"
 dependencies = [
     "aiocache>=0.12.1,<1.0",
     "fastapi>=0.95.2,<1.0",

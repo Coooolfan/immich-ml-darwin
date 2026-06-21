@@ -64,4 +64,6 @@ MACHINE_LEARNING_PROVIDERS__DEFAULT=CoreMLExecutionProvider,CPUExecutionProvider
 
 ## 许可说明
 
-本仓库继承上游 Immich machine-learning 代码及其第三方模型约束。尤其是 InsightFace 模型的再分发和商业使用，需要遵守 InsightFace 的许可条款。
+本仓库继承上游 Immich machine-learning 代码，使用 GNU Affero General Public License v3.0，详见 [LICENSE](LICENSE)。
+
+第三方模型和依赖仍受各自许可证约束。尤其是 InsightFace 模型的再分发和商业使用，需要遵守 InsightFace 的许可条款。
