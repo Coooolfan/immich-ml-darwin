@@ -186,6 +186,9 @@ class CustomRichHandler(RichHandler):
 
 log = logging.getLogger("ml.log")
 log.setLevel(LOG_LEVEL)
+log.propagate = False
+if not any(isinstance(handler, CustomRichHandler) for handler in log.handlers):
+    log.addHandler(CustomRichHandler())
 
 
 # patches this issue https://github.com/encode/uvicorn/discussions/1803
