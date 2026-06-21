@@ -1,36 +1,38 @@
 # immich-ml-darwin
 
-Unofficial Immich machine-learning service tuning for macOS and Apple Silicon.
+这是一个非官方的 Immich machine-learning 服务 macOS / Apple Silicon 调优版本。
 
-This repository contains only the upstream Immich `machine-learning` component. It keeps the Immich ML HTTP API compatible while adding small runtime controls that are useful when running the ML service directly on a Mac.
+这个仓库只包含上游 Immich 的 `machine-learning` 组件，保持 Immich ML HTTP API 兼容，同时增加一些直接在 Mac 上运行 ML 服务时更实用的运行时控制。
 
-## Defaults
+英文说明见 [README.en.md](README.en.md)。
 
-- OCR runs on `CPUExecutionProvider` by default.
-- Facial recognition keeps `CoreMLExecutionProvider,CPUExecutionProvider`.
-- CLIP and other models keep upstream automatic provider selection unless configured.
-- `CoreMLExecutionProvider` package/cache load failures are retried once with CPU.
-- `scripts/start-darwin.sh` defaults `MACHINE_LEARNING_MODEL_TTL=0` so the service stays resident.
+## 默认行为
 
-## Setup
+- OCR 默认使用 `CPUExecutionProvider`。
+- 人脸识别默认保留 `CoreMLExecutionProvider,CPUExecutionProvider`。
+- CLIP 和其他模型默认保持上游自动 provider 选择，除非显式配置。
+- `CoreMLExecutionProvider` 的 package/cache 加载失败时，会自动重试一次 CPU。
+- `scripts/start-darwin.sh` 默认设置 `MACHINE_LEARNING_MODEL_TTL=0`，让服务和模型常驻。
 
-Install dependencies:
+## 安装和启动
+
+安装依赖：
 
 ```bash
 uv sync --extra cpu
 ```
 
-Start the service:
+启动服务：
 
 ```bash
 scripts/start-darwin.sh
 ```
 
-The default URL is `http://0.0.0.0:3003`.
+默认服务地址是 `http://0.0.0.0:3003`。
 
-## Configuration
+## 配置
 
-Common environment variables:
+常用环境变量：
 
 ```bash
 MACHINE_LEARNING_CACHE_FOLDER=/Volumes/SKHynix/immich-ml-cache
@@ -43,7 +45,7 @@ IMMICH_HOST=0.0.0.0
 IMMICH_PORT=3003
 ```
 
-Provider profiles are comma-separated ONNX Runtime provider lists. More specific profiles win over broader profiles:
+Provider 配置使用逗号分隔的 ONNX Runtime provider 列表。更具体的配置优先级更高：
 
 ```bash
 MACHINE_LEARNING_PROVIDERS__CLIP_TEXTUAL=CPUExecutionProvider
@@ -56,28 +58,10 @@ MACHINE_LEARNING_PROVIDERS__FACIAL_RECOGNITION_RECOGNITION=CoreMLExecutionProvid
 MACHINE_LEARNING_PROVIDERS__DEFAULT=CoreMLExecutionProvider,CPUExecutionProvider
 ```
 
-## Benchmarks
+## 上游来源
 
-The benchmark scripts call the running HTTP service:
+这个仓库从 Immich 上游仓库的 `machine-learning` 目录拆分而来。具体 commit 和版本见 [UPSTREAM.md](UPSTREAM.md)。
 
-```bash
-scripts/bench-face.sh /Volumes/SKHynix/Music
-scripts/bench-ocr.sh /Volumes/SKHynix/Music
-scripts/bench-clip-visual.sh /Volumes/SKHynix/Music
-```
+## 许可说明
 
-Useful overrides:
-
-```bash
-COUNT=20 FACE_MODEL=antelopev2 scripts/bench-face.sh /Volumes/SKHynix/Music
-OCR_MODEL=PP-OCRv5_mobile scripts/bench-ocr.sh /Volumes/SKHynix/Music
-CLIP_MODEL=XLM-Roberta-Large-ViT-H-14__frozen_laion5b_s13b_b90k scripts/bench-clip-visual.sh /Volumes/SKHynix/Music
-```
-
-## Upstream
-
-See `UPSTREAM.md` for the upstream Immich commit and path this repository was split from.
-
-## License Notes
-
-This repository inherits the upstream Immich machine-learning code and its third-party model constraints. In particular, InsightFace model redistribution and commercial use are subject to InsightFace licensing terms.
+本仓库继承上游 Immich machine-learning 代码及其第三方模型约束。尤其是 InsightFace 模型的再分发和商业使用，需要遵守 InsightFace 的许可条款。

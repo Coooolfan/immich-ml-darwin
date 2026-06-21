@@ -13,4 +13,4 @@ Local changes are intended to stay limited to macOS and Apple Silicon runtime be
 - per-task provider preferences
 - OCR defaulting to CPU
 - CoreML cache/load failure fallback to CPU
-- local start and benchmark scripts
+- local macOS start script
