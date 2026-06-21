@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from io import BytesIO
@@ -19,7 +20,8 @@ from pytest import MonkeyPatch
 from pytest_mock import MockerFixture
 
 from immich_ml.config import MaxBatchSize, ProviderProfiles, Settings, settings
-from immich_ml.main import load, preload_models
+from immich_ml.main import format_ttl_settings, load, preload_models
+from immich_ml.main import run_inference as run_ml_inference
 from immich_ml.models.base import InferenceModel
 from immich_ml.models.cache import ModelCache
 from immich_ml.models.clip.textual import MClipTextualEncoder, OpenClipTextualEncoder
@@ -29,7 +31,7 @@ from immich_ml.models.facial_recognition.recognition import FaceRecognizer
 from immich_ml.models.ocr.detection import TextDetector
 from immich_ml.models.ocr.recognition import TextRecognizer
 from immich_ml.models.ocr.schemas import OcrOptions
-from immich_ml.schemas import ModelFormat, ModelPrecision, ModelTask, ModelType
+from immich_ml.schemas import InferenceEntry, ModelFormat, ModelPrecision, ModelTask, ModelType
 from immich_ml.sessions.ann import AnnSession
 from immich_ml.sessions.ort import OrtSession
 from immich_ml.sessions.rknn import RknnSession, run_inference
@@ -989,6 +991,42 @@ class TestOcr:
         )
 
 
+class TestSettings:
+    def test_model_ttl_defaults_to_global_value(self) -> None:
+        settings = Settings(model_ttl=120)
+
+        assert settings.model_ttl_for_task(ModelTask.SEARCH) == 120
+        assert settings.model_ttl_for_task(ModelTask.FACIAL_RECOGNITION) == 120
+        assert settings.model_ttl_for_task(ModelTask.OCR) == 120
+
+    def test_model_ttl_overrides_per_task(self) -> None:
+        settings = Settings(
+            model_ttl=120,
+            model_ttl_clip=30,
+            model_ttl_facial_recognition=60,
+            model_ttl_ocr=90,
+        )
+
+        assert settings.model_ttl_for_task(ModelTask.SEARCH) == 30
+        assert settings.model_ttl_for_task(ModelTask.FACIAL_RECOGNITION) == 60
+        assert settings.model_ttl_for_task(ModelTask.OCR) == 90
+
+    def test_model_ttl_enabled_if_any_task_has_positive_ttl(self) -> None:
+        settings = Settings(model_ttl=0, model_ttl_clip=0, model_ttl_facial_recognition=10, model_ttl_ocr=0)
+
+        assert settings.model_ttl_enabled is True
+
+    def test_model_ttl_disabled_if_all_tasks_are_non_positive(self) -> None:
+        settings = Settings(model_ttl=0, model_ttl_clip=0, model_ttl_facial_recognition=0, model_ttl_ocr=0)
+
+        assert settings.model_ttl_enabled is False
+
+    def test_format_ttl_settings(self) -> None:
+        assert format_ttl_settings({ModelTask.SEARCH: 10, ModelTask.FACIAL_RECOGNITION: 0, ModelTask.OCR: 20}) == (
+            "after inactivity (clip: 10s, ocr: 20s)"
+        )
+
+
 @pytest.mark.asyncio
 class TestCache:
     async def test_caches(self, mock_get_model: mock.Mock) -> None:
@@ -1024,6 +1062,17 @@ class TestCache:
         model_cache = ModelCache()
         await model_cache.get("test_model_name", ModelType.RECOGNITION, ModelTask.FACIAL_RECOGNITION, ttl=100)
         mock_lock_cls.return_value.__aenter__.return_value.cas.assert_called_with(mock.ANY, ttl=100)
+
+    async def test_model_unloads_on_ttl_expiry(self) -> None:
+        model_cache = ModelCache()
+        mock_model = mock.Mock()
+        mock_model.unload_when_idle = mock.Mock()
+
+        await model_cache.cache.set("model-key", mock_model, ttl=0.01)
+        await asyncio.sleep(0.02)
+
+        mock_model.unload_when_idle.assert_called_once()
+        assert await model_cache.cache.get("model-key") is None
 
     @mock.patch("immich_ml.models.cache.SimpleMemoryCache.expire")
     async def test_revalidate_get(self, mock_cache_expire: mock.Mock, mock_get_model: mock.Mock) -> None:
@@ -1229,6 +1278,87 @@ class TestLoad:
             "ARMNN is available, but model 'test_model_name' does not support it.", exc_info=error
         )
         mock_model.model_format = ModelFormat.ONNX
+
+
+def test_unload_when_idle_defers_until_active_request_releases() -> None:
+    model = OpenClipTextualEncoder("ViT-B-32__openai", session=mock.Mock())
+    model.acquire()
+
+    model.unload_when_idle()
+
+    assert model.loaded is True
+    assert model.unload_pending is True
+
+    model.release()
+
+    assert model.loaded is False
+    assert model.unload_pending is False
+
+
+@pytest.mark.asyncio
+class TestRunInference:
+    async def test_uses_task_specific_model_ttl(self, mocker: MockerFixture) -> None:
+        mocker.patch.object(settings, "model_ttl_clip", 30)
+        mocker.patch.object(settings, "model_ttl_facial_recognition", 60)
+        mocker.patch.object(settings, "model_ttl_ocr", 90)
+        model_cache_get = mocker.patch("immich_ml.main.model_cache.get")
+        mocker.patch("immich_ml.main.load", side_effect=lambda model: model)
+        mocker.patch("immich_ml.main.run", side_effect=lambda func, *args, **kwargs: func(*args, **kwargs))
+
+        async def make_model(entry: InferenceEntry) -> mock.Mock:
+            model = mock.Mock(spec=InferenceModel)
+            model.depends = []
+            model.identity = (entry["type"], entry["task"])
+            model.model_task = entry["task"]
+            model.model_type = entry["type"]
+            model.model_name = entry["name"]
+            model.predict.return_value = f"{entry['task']}-{entry['type']}"
+            return model
+
+        entries: list[InferenceEntry] = [
+            {"name": "clip_model", "type": ModelType.VISUAL, "task": ModelTask.SEARCH, "options": {}},
+            {
+                "name": "face_model",
+                "type": ModelType.RECOGNITION,
+                "task": ModelTask.FACIAL_RECOGNITION,
+                "options": {},
+            },
+            {"name": "ocr_model", "type": ModelType.DETECTION, "task": ModelTask.OCR, "options": {}},
+        ]
+        model_cache_get.side_effect = [await make_model(entry) for entry in entries]
+
+        await run_ml_inference("test", (entries, []))
+
+        model_cache_get.assert_has_awaits(
+            [
+                mock.call("clip_model", ModelType.VISUAL, ModelTask.SEARCH, ttl=30),
+                mock.call("face_model", ModelType.RECOGNITION, ModelTask.FACIAL_RECOGNITION, ttl=60),
+                mock.call("ocr_model", ModelType.DETECTION, ModelTask.OCR, ttl=90),
+            ],
+            any_order=True,
+        )
+
+    async def test_passes_no_ttl_when_task_ttl_is_disabled(self, mocker: MockerFixture) -> None:
+        mocker.patch.object(settings, "model_ttl_clip", 0)
+        model_cache_get = mocker.patch("immich_ml.main.model_cache.get")
+        mocker.patch("immich_ml.main.load", side_effect=lambda model: model)
+        mocker.patch("immich_ml.main.run", side_effect=lambda func, *args, **kwargs: func(*args, **kwargs))
+
+        model = mock.Mock(spec=InferenceModel)
+        model.depends = []
+        model.identity = (ModelType.TEXTUAL, ModelTask.SEARCH)
+        model.model_task = ModelTask.SEARCH
+        model.model_type = ModelType.TEXTUAL
+        model.model_name = "clip_model"
+        model.predict.return_value = "embedding"
+        model_cache_get.return_value = model
+        entries: list[InferenceEntry] = [
+            {"name": "clip_model", "type": ModelType.TEXTUAL, "task": ModelTask.SEARCH, "options": {}}
+        ]
+
+        await run_ml_inference("test", (entries, []))
+
+        model_cache_get.assert_awaited_once_with("clip_model", ModelType.TEXTUAL, ModelTask.SEARCH, ttl=None)
 
 
 def test_root_endpoint(deployed_app: TestClient) -> None:

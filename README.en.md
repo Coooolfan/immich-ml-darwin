@@ -11,6 +11,7 @@ This repository contains only the upstream Immich `machine-learning` component. 
 - CLIP and other models keep upstream automatic provider selection unless configured.
 - `CoreMLExecutionProvider` package/cache load failures are retried once with CPU.
 - `scripts/start-darwin.sh` defaults `MACHINE_LEARNING_MODEL_TTL=0` so the service stays resident.
+- Each `/predict` request, per-model inference, and first model load logs elapsed time.
 
 ## Setup
 
@@ -35,6 +36,9 @@ Common environment variables:
 ```bash
 MACHINE_LEARNING_CACHE_FOLDER=/Volumes/SKHynix/immich-ml-cache
 MACHINE_LEARNING_MODEL_TTL=0
+MACHINE_LEARNING_MODEL_TTL_CLIP=0
+MACHINE_LEARNING_MODEL_TTL_FACIAL_RECOGNITION=0
+MACHINE_LEARNING_MODEL_TTL_OCR=0
 MACHINE_LEARNING_PROVIDERS__OCR=CPUExecutionProvider
 MACHINE_LEARNING_PROVIDERS__FACIAL_RECOGNITION=CoreMLExecutionProvider,CPUExecutionProvider
 MACHINE_LEARNING_COREML_RETRY_CPU_ON_FAILURE=true
@@ -42,6 +46,16 @@ IMMICH_LOG_LEVEL=debug
 IMMICH_HOST=0.0.0.0
 IMMICH_PORT=3003
 ```
+
+`MACHINE_LEARNING_MODEL_TTL` is the default in-memory model TTL in seconds. Values `<= 0` disable automatic unloads. Three task-specific TTL variables can override the default:
+
+```bash
+MACHINE_LEARNING_MODEL_TTL_CLIP=300
+MACHINE_LEARNING_MODEL_TTL_FACIAL_RECOGNITION=120
+MACHINE_LEARNING_MODEL_TTL_OCR=60
+```
+
+After a model exceeds its TTL, it is unloaded from memory. If it expires while inference is still running, unload is deferred until the current inference completes. The next request reloads the model.
 
 Provider profiles are comma-separated ONNX Runtime provider lists. More specific profiles win over broader profiles:
 

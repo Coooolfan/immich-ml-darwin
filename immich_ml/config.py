@@ -13,7 +13,7 @@ from rich.logging import RichHandler
 from uvicorn import Server
 from uvicorn.workers import UvicornWorker
 
-from .schemas import ModelPrecision
+from .schemas import ModelPrecision, ModelTask
 
 
 class ClipSettings(BaseModel):
@@ -78,6 +78,9 @@ class Settings(BaseSettings):
 
     cache_folder: Path = (Path.home() / ".cache" / "immich_ml").resolve()
     model_ttl: int = 300
+    model_ttl_clip: int | None = None
+    model_ttl_facial_recognition: int | None = None
+    model_ttl_ocr: int | None = None
     model_ttl_poll_s: int = 10
     workers: int = 1
     worker_timeout: int = 300
@@ -102,6 +105,25 @@ class Settings(BaseSettings):
     @property
     def device_id(self) -> str:
         return os.environ.get("MACHINE_LEARNING_DEVICE_ID", "0")
+
+    def model_ttl_for_task(self, model_task: ModelTask | str) -> int:
+        match ModelTask(model_task):
+            case ModelTask.SEARCH:
+                return self.model_ttl_clip if self.model_ttl_clip is not None else self.model_ttl
+            case ModelTask.FACIAL_RECOGNITION:
+                if self.model_ttl_facial_recognition is not None:
+                    return self.model_ttl_facial_recognition
+                return self.model_ttl
+            case ModelTask.OCR:
+                return self.model_ttl_ocr if self.model_ttl_ocr is not None else self.model_ttl
+
+    @property
+    def model_ttls(self) -> dict[ModelTask, int]:
+        return {model_task: self.model_ttl_for_task(model_task) for model_task in ModelTask}
+
+    @property
+    def model_ttl_enabled(self) -> bool:
+        return any(ttl > 0 for ttl in self.model_ttls.values())
 
 
 class NonPrefixedSettings(BaseSettings):

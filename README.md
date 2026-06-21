@@ -13,6 +13,7 @@
 - CLIP 和其他模型默认保持上游自动 provider 选择，除非显式配置。
 - `CoreMLExecutionProvider` 的 package/cache 加载失败时，会自动重试一次 CPU。
 - `scripts/start-darwin.sh` 默认设置 `MACHINE_LEARNING_MODEL_TTL=0`，让服务和模型常驻。
+- 每次 `/predict` 请求、单个模型推理、模型首次加载都会记录耗时日志。
 
 ## 安装和启动
 
@@ -37,6 +38,9 @@ scripts/start-darwin.sh
 ```bash
 MACHINE_LEARNING_CACHE_FOLDER=/Volumes/SKHynix/immich-ml-cache
 MACHINE_LEARNING_MODEL_TTL=0
+MACHINE_LEARNING_MODEL_TTL_CLIP=0
+MACHINE_LEARNING_MODEL_TTL_FACIAL_RECOGNITION=0
+MACHINE_LEARNING_MODEL_TTL_OCR=0
 MACHINE_LEARNING_PROVIDERS__OCR=CPUExecutionProvider
 MACHINE_LEARNING_PROVIDERS__FACIAL_RECOGNITION=CoreMLExecutionProvider,CPUExecutionProvider
 MACHINE_LEARNING_COREML_RETRY_CPU_ON_FAILURE=true
@@ -44,6 +48,16 @@ IMMICH_LOG_LEVEL=debug
 IMMICH_HOST=0.0.0.0
 IMMICH_PORT=3003
 ```
+
+`MACHINE_LEARNING_MODEL_TTL` 是默认模型内存 TTL，单位秒，`<= 0` 表示不自动卸载。三个分类 TTL 可以单独覆盖默认值：
+
+```bash
+MACHINE_LEARNING_MODEL_TTL_CLIP=300
+MACHINE_LEARNING_MODEL_TTL_FACIAL_RECOGNITION=120
+MACHINE_LEARNING_MODEL_TTL_OCR=60
+```
+
+模型超过对应 TTL 后会从内存卸载；如果过期时仍在推理，会等当前推理结束后卸载。后续新请求会重新加载模型。
 
 Provider 配置使用逗号分隔的 ONNX Runtime provider 列表。更具体的配置优先级更高：
 

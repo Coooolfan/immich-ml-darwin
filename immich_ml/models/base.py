@@ -30,6 +30,8 @@ class InferenceModel(ABC):
     ) -> None:
         self.loaded = session is not None
         self.load_attempts = 0
+        self.active_requests = 0
+        self.unload_pending = False
         self.model_name = clean_name(model_name)
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self._cache_dir_default
         self.model_format = model_format if model_format is not None else self._model_format_default
@@ -57,11 +59,44 @@ class InferenceModel(ABC):
             f"from {self.model_path}"
         )
 
+    def unload(self) -> None:
+        if not self.loaded:
+            return
+        try:
+            del self.session
+        except AttributeError:
+            pass
+        self.loaded = False
+        log.info(f"Unloaded {self.model_type.replace('-', ' ')} model '{self.model_name}' from memory")
+
+    def unload_when_idle(self) -> None:
+        if self.active_requests > 0:
+            self.unload_pending = True
+            return
+        self.unload()
+
+    def acquire(self) -> None:
+        self.active_requests += 1
+
+    def release(self) -> None:
+        self.active_requests -= 1
+        if self.active_requests <= 0:
+            self.active_requests = 0
+            if self.unload_pending:
+                self.unload_pending = False
+                self.unload()
+
     def predict(self, *inputs: Any, **model_kwargs: Any) -> Any:
         self.load()
         if model_kwargs:
             self.configure(**model_kwargs)
         return self._predict(*inputs)
+
+    def __del__(self) -> None:
+        try:
+            self.unload()
+        except Exception:
+            pass
 
     @abstractmethod
     def _predict(self, *inputs: Any, **model_kwargs: Any) -> Any: ...

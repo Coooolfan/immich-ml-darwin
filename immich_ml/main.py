@@ -1,7 +1,5 @@
 import asyncio
 import gc
-import os
-import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -38,30 +36,21 @@ from .schemas import (
 
 MultiPartParser.spool_max_size = 2**26  # spools to disk if payload is 64 MiB or larger
 
-model_cache = ModelCache(revalidate=settings.model_ttl > 0)
+model_cache = ModelCache(revalidate=settings.model_ttl_enabled)
 thread_pool: ThreadPoolExecutor | None = None
 lock = threading.Lock()
-active_requests = 0
-last_called: float | None = None
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     global thread_pool
-    log.info(
-        (
-            "Created in-memory cache with unloading "
-            f"{f'after {settings.model_ttl}s of inactivity' if settings.model_ttl > 0 else 'disabled'}."
-        )
-    )
+    log.info(f"Created in-memory cache with unloading {format_ttl_settings(settings.model_ttls)}.")
 
     try:
         if settings.request_threads > 0:
             # asyncio is a huge bottleneck for performance, so we use a thread pool to run blocking code
             thread_pool = ThreadPoolExecutor(settings.request_threads) if settings.request_threads > 0 else None
             log.info(f"Initialized request thread pool with {settings.request_threads} threads.")
-        if settings.model_ttl > 0 and settings.model_ttl_poll_s > 0:
-            asyncio.ensure_future(idle_shutdown_task())
         if settings.preload is not None:
             await preload_models(settings.preload)
         yield
@@ -72,6 +61,20 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         if thread_pool is not None:
             thread_pool.shutdown()
         gc.collect()
+
+
+def format_ttl_settings(ttls: dict[ModelTask, int]) -> str:
+    enabled_ttls = {model_task: ttl for model_task, ttl in ttls.items() if ttl > 0}
+    if not enabled_ttls:
+        return "disabled"
+    formatted_ttls = ", ".join(f"{model_task}: {ttl}s" for model_task, ttl in enabled_ttls.items())
+    return f"after inactivity ({formatted_ttls})"
+
+
+def log_model_load_time(model: InferenceModel, elapsed_ms: float) -> None:
+    model_type = getattr(model, "model_type", "unknown")
+    model_name = getattr(model, "model_name", "unknown")
+    log.info(f"Loaded {str(model_type).replace('-', ' ')} model '{model_name}' in {elapsed_ms:.1f}ms")
 
 
 async def preload_models(preload: PreloadModelData) -> None:
@@ -132,14 +135,13 @@ async def preload_models(preload: PreloadModelData) -> None:
         )
 
 
-def update_state() -> Iterator[None]:
-    global active_requests, last_called
-    active_requests += 1
-    last_called = time.time()
+def log_predict_time() -> Iterator[None]:
+    start = time.perf_counter()
     try:
         yield
     finally:
-        active_requests -= 1
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        log.info(f"Predict request completed in {elapsed_ms:.1f}ms")
 
 
 def get_entries(entries: str = Form()) -> InferenceEntries:
@@ -176,7 +178,7 @@ def ping() -> PlainTextResponse:
     return PlainTextResponse("pong")
 
 
-@app.post("/predict", dependencies=[Depends(update_state)])
+@app.post("/predict", dependencies=[Depends(log_predict_time)])
 async def predict(
     entries: InferenceEntries = Depends(get_entries),
     image: bytes | None = File(default=None),
@@ -197,8 +199,9 @@ async def run_inference(payload: Image | str, entries: InferenceEntries) -> Infe
     response: InferenceResponse = {}
 
     async def _run_inference(entry: InferenceEntry) -> None:
+        ttl = settings.model_ttl_for_task(entry["task"])
         model = await model_cache.get(
-            entry["name"], entry["type"], entry["task"], ttl=settings.model_ttl, **entry["options"]
+            entry["name"], entry["type"], entry["task"], ttl=ttl if ttl > 0 else None, **entry["options"]
         )
         inputs = [payload]
         for dep in model.depends:
@@ -208,7 +211,16 @@ async def run_inference(payload: Image | str, entries: InferenceEntries) -> Infe
                 message = f"Task {entry['task']} of type {entry['type']} depends on output of {dep}"
                 raise HTTPException(400, message)
         model = await load(model)
-        output = await run(model.predict, *inputs, **entry["options"])
+        start = time.perf_counter()
+        model.acquire()
+        try:
+            output = await run(model.predict, *inputs, **entry["options"])
+        finally:
+            model.release()
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        log.info(
+            f"Predict {model.model_task} {model.model_type} model '{model.model_name}' completed in {elapsed_ms:.1f}ms"
+        )
         outputs[model.identity] = output
         response[entry["task"]] = output
 
@@ -251,22 +263,16 @@ async def load(model: InferenceModel) -> InferenceModel:
         return model
 
     try:
-        return await run(_load, model)
+        start = time.perf_counter()
+        loaded_model = await run(_load, model)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        log_model_load_time(model, elapsed_ms)
+        return loaded_model
     except (OSError, InvalidProtobuf, BadZipFile, NoSuchFile):
         log.warning(f"Failed to load {model.model_type.replace('_', ' ')} model '{model.model_name}'. Clearing cache.")
         model.clear_cache()
-        return await run(_load, model)
-
-
-async def idle_shutdown_task() -> None:
-    while True:
-        if (
-            last_called is not None
-            and not active_requests
-            and not lock.locked()
-            and time.time() - last_called > settings.model_ttl
-        ):
-            log.info("Shutting down due to inactivity.")
-            os.kill(os.getpid(), signal.SIGINT)
-            break
-        await asyncio.sleep(settings.model_ttl_poll_s)
+        start = time.perf_counter()
+        loaded_model = await run(_load, model)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        log_model_load_time(model, elapsed_ms)
+        return loaded_model
